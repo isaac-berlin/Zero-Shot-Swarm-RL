@@ -1,0 +1,4 @@
+pettingzoo
+gymnasium
+numpy
+pygame
