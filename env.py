@@ -1,14 +1,14 @@
 from typing import Dict, List, Tuple, Optional
 import random
 import numpy as np
-from pettingzoo.utils import AECEnv
-from pettingzoo.test import api_test
+from pettingzoo.utils import ParallelEnv, AECEnv
+from pettingzoo.test import api_test, parallel_api_test
 from gymnasium import spaces
 import pygame
 
 
 
-class PickupDelivery(AECEnv):
+class PickupDelivery(ParallelEnv):
     metadata = {
         "render_modes": ["human"],
         "name": "PickupDeliveryEnv-v0",
@@ -35,7 +35,8 @@ class PickupDelivery(AECEnv):
         self.delivery_correspondence = {item: None for item in self.items}
 
         # Agents
-        self.possible_agents = self.agents = [f"agent_{i}" for i in range(num_agents)]
+        self.possible_agents = [f"agent_{i}" for i in range(num_agents)]
+        self.agents = self.possible_agents[:]
         self.agent_location = {agent: (0, 0) for agent in self.agents}
         self.agent_carrying = {agent: None for agent in self.agents}
         
@@ -58,8 +59,8 @@ class PickupDelivery(AECEnv):
             agent: spaces.Box(low=-1, high=grid_size, shape=(obs_size,), dtype=np.float32)
             for agent in self.possible_agents
         }
-        
-                # ----- Rendering (pygame) -----
+
+        # ----- Rendering (pygame) -----
         self.render_mode = "human"
         self._pygame_initialized = False
         self._cell_size = 64  # pixels per grid cell
@@ -76,6 +77,7 @@ class PickupDelivery(AECEnv):
     def reset(self, seed=None, options=None):
         self.timestep = 0
         self.delivered = {item: False for item in self.items}
+        self.agents = self.possible_agents[:]
 
         # Assign each item to a random delivery point
         for item in self.items:
@@ -126,7 +128,7 @@ class PickupDelivery(AECEnv):
             self.agent_carrying[a] = None
             idx += 1
 
-        return self._get_observations(), {}
+        return self._get_observations(), {agent: {} for agent in self.agents}
 
     # -------------------------------------------------------
     def step(self, actions):
@@ -155,15 +157,16 @@ class PickupDelivery(AECEnv):
                     self._attempt_drop(agent)  # no reward
 
         # --- Termination ---
-        all_delivered = all(self.delivered.values())
-        dones = {agent: all_delivered for agent in self.agents}
-        truncated = {agent: (self.timestep >= self.max_steps) for agent in self.agents}
-
+        done = all(self.delivered.values())
+        truncated = self.timestep >= self.max_steps
+        dones = {agent: done or truncated for agent in self.agents}
+        truncations = {agent: truncated for agent in self.agents}
+        if done or truncated:
+            self.agents = []
         observations = self._get_observations()
         infos = {agent: {} for agent in self.agents}
 
-        return observations, rewards, dones, truncated, infos
-
+        return observations, rewards, dones, truncations, infos
     # -------------------------------------------------------
     def _move(self, loc, action):
         x, y = loc
@@ -380,11 +383,12 @@ if __name__ == "__main__":
         num_items=4,
         num_delivery_points=2
     )
+
+    parallel_api_test(env, num_cycles=10000)
     
     obs, _ = env.reset()
 
     for _ in range(100):
-        # random joint actions
         actions = {agent: env.action_space(agent).sample() for agent in env.agents}
         obs, rew, done, trunc, info = env.step(actions)
         env.render()
