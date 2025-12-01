@@ -134,7 +134,7 @@ class PickupDelivery(ParallelEnv):
     def step(self, actions):
         self.timestep += 1
 
-        rewards = {agent: -0.01 for agent in self.agents}  # step penalty
+        rewards = {agent: -0.005 for agent in self.agents}  # step penalty
 
         # --- Execute actions ---
         for agent, action in actions.items():
@@ -146,13 +146,15 @@ class PickupDelivery(ParallelEnv):
             # Grab
             elif action == 5:
                 if self._attempt_grab(agent):
-                    rewards[agent] += 1.0
+                    rewards[agent] += 0.01
+                else:
+                    rewards[agent] -= 0.01
 
             # Drop (may deliver)
             elif action == 6:
                 delivered = self._attempt_delivery(agent)
                 if delivered:
-                    rewards[agent] += 5.0
+                    rewards[agent] += 1.0
                 else:
                     self._attempt_drop(agent)  # no reward
 

@@ -1,17 +1,18 @@
 import math
+import os
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+import tqdm
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
+from torch.utils.tensorboard import SummaryWriter
 
-# ---- import your ParallelEnv ----
-# from your_env_file import PickupDelivery
-# Ensure your env class name matches.
+
 from env import PickupDelivery
 
 
@@ -27,8 +28,7 @@ def set_seed(seed: int = 0):
 
 def stack_global_state(obs_dict: Dict[str, np.ndarray], agent_order: List[str]) -> np.ndarray:
     """
-    Global state for centralized critic: concat observations in fixed agent order.
-    Shape: (num_agents * obs_dim,)
+    global state for the centralized critic: concatenation of all agents' observations
     """
     return np.concatenate([obs_dict[a] for a in agent_order], axis=0)
 
@@ -54,7 +54,6 @@ class SharedActor(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        # returns logits
         return self.net(obs)
 
 
@@ -74,7 +73,7 @@ class CentralCritic(nn.Module):
         )
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        return self.net(state).squeeze(-1)  # (batch,)
+        return self.net(state).squeeze(-1)
 
 
 # =========================
@@ -219,6 +218,8 @@ class MAPPO:
         minibatch_size: int = 256,
         gamma: float = 0.99,
         lam: float = 0.95,
+        writer=None,
+        global_step=None,
     ):
         obs, state, acts, old_logps, old_vals, advs, rets = buffer.get_flat_batches()
 
@@ -275,6 +276,13 @@ class MAPPO:
                 critic_loss.backward()
                 nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                 self.opt_critic.step()
+                
+                if writer is not None:
+                    writer.add_scalar("loss/policy_loss", policy_loss.item(), global_step)
+                    writer.add_scalar("loss/value_loss", vf_loss.item(), global_step)
+                    writer.add_scalar("loss/entropy", entropy.item(), global_step)
+                    writer.add_scalar("loss/actor_lr", self.opt_actor.param_groups[0]['lr'], global_step)
+                    writer.add_scalar("loss/critic_lr", self.opt_critic.param_groups[0]['lr'], global_step)
 
 
 # =========================
@@ -283,7 +291,7 @@ class MAPPO:
 
 def train_mappo(
     env,
-    total_steps: int = 200_000,
+    total_episodes: int = 5000,
     rollout_len: int = 128,
     update_epochs: int = 4,
     minibatch_size: int = 256,
@@ -308,14 +316,15 @@ def train_mappo(
     )
 
     buffer = RolloutBuffer(agent_order)
+    
+    writer = SummaryWriter(log_dir="runs/mappo_base")
 
     obs, _ = env.reset()
     ep_return = 0.0
     ep_len = 0
-    episode = 0
     step_count = 0
 
-    while step_count < total_steps:
+    for episode in tqdm.trange(total_episodes):
         buffer.clear()
 
         # ===== rollout =====
@@ -358,11 +367,11 @@ def train_mappo(
 
             # if episode ended, reset
             if all(dones.values()) or all(truncs.values()):
-                print(f"[episode {episode}] return={ep_return:.2f} len={ep_len}")
+                writer.add_scalar("episode/return", ep_return, global_step=step_count)
+                writer.add_scalar("episode/length", ep_len, global_step=step_count)
                 obs, _ = env.reset()
                 ep_return = 0.0
                 ep_len = 0
-                episode += 1
 
         # bootstrap last values for GAE
         last_values = {}
@@ -382,9 +391,12 @@ def train_mappo(
             minibatch_size=minibatch_size,
             gamma=gamma,
             lam=lam,
+            writer=writer,
+            global_step=step_count
         )
 
     env.close()
+    writer.close() 
     return algo
 
 
@@ -406,12 +418,14 @@ if __name__ == "__main__":
 
     algo = train_mappo(
         env,
-        total_steps=150_000_000_000,
+        total_episodes=1000,
         rollout_len=128,
         update_epochs=4,
         minibatch_size=256,
         gamma=0.99,
         lam=0.95,
         device=device,
-        render_every=1000  # set to e.g. 20 to watch training
+        render_every=20  # set to e.g. 20 to watch training
     )
+    
+    torch.save(algo.actor.state_dict(), "mappo_actor.pth")
