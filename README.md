@@ -2,4 +2,4 @@
 Zero-Shot Generalization Across Team Sizes and Task Counts in Pickup-and-Delivery
 
 ## TODO
-Maybe try CNN encoder for the area observations?
+[CNN for observations](https://arxiv.org/abs/1809.03531)
