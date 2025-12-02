@@ -13,7 +13,7 @@ from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 
-from env import PickupDelivery
+from env import PickupOnly
 
 
 # =========================
@@ -26,11 +26,20 @@ def set_seed(seed: int = 0):
     torch.manual_seed(seed)
 
 
-def stack_global_state(obs_dict: Dict[str, np.ndarray], agent_order: List[str]) -> np.ndarray:
+def stack_global_state(env) -> np.ndarray:
     """
-    global state for the centralized critic: concatenation of all agents' observations
+    location of all agents and items concatenated.
     """
-    return np.concatenate([obs_dict[a] for a in agent_order], axis=0)
+    state = []
+    for agent in env.possible_agents:
+        state.append(env.agent_location[agent][0])  # x
+        state.append(env.agent_location[agent][1])  # y
+        
+    for item in env.items:
+        state.append(env.item_locations[item][0])  # x
+        state.append(env.item_locations[item][1])  # y
+
+    return np.array(state, dtype=np.float32)
 
 
 # =========================
@@ -183,7 +192,7 @@ class MAPPO:
         self.device = device
         self.num_agents = num_agents
         self.obs_dim = obs_dim
-        self.state_dim = obs_dim * num_agents
+        self.state_dim = 14
         self.n_actions = n_actions
 
         self.actor = SharedActor(obs_dim, n_actions, hidden_actor).to(device)
@@ -323,13 +332,15 @@ def train_mappo(
     ep_return = 0.0
     ep_len = 0
     step_count = 0
+    episode = 0
 
-    for episode in tqdm.trange(total_episodes):
+    pbar = tqdm.tqdm(total=total_episodes)
+    while episode < total_episodes:
         buffer.clear()
 
         # ===== rollout =====
         for t in range(rollout_len):
-            state = stack_global_state(obs, agent_order)
+            state = stack_global_state(env)
 
             actions = {}
             logps = {}
@@ -367,15 +378,17 @@ def train_mappo(
 
             # if episode ended, reset
             if all(dones.values()) or all(truncs.values()):
-                writer.add_scalar("episode/return", ep_return, global_step=step_count)
-                writer.add_scalar("episode/length", ep_len, global_step=step_count)
+                writer.add_scalar("episode/return", ep_return, global_step=episode)
+                writer.add_scalar("episode/length", ep_len, global_step=episode)
                 obs, _ = env.reset()
                 ep_return = 0.0
                 ep_len = 0
+                episode += 1
+                pbar.update(1)
 
         # bootstrap last values for GAE
         last_values = {}
-        last_state = stack_global_state(obs, agent_order)
+        last_state = stack_global_state(env)
         last_state_t = torch.tensor(last_state, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             v_last = algo.critic(last_state_t).item()
@@ -395,6 +408,7 @@ def train_mappo(
             global_step=step_count
         )
 
+    pbar.close()
     env.close()
     writer.close() 
     return algo
@@ -407,25 +421,24 @@ def train_mappo(
 if __name__ == "__main__":
     set_seed(0)
 
-    env = PickupDelivery(
+    env = PickupOnly(
         grid_size=7,
         num_agents=3,
-        num_items=4,
-        num_delivery_points=2
+        num_items=4
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     algo = train_mappo(
         env,
-        total_episodes=1000,
+        total_episodes=10000,
         rollout_len=128,
         update_epochs=4,
         minibatch_size=256,
         gamma=0.99,
         lam=0.95,
         device=device,
-        render_every=20  # set to e.g. 20 to watch training
+        render_every=0  # set to e.g. 20 to watch training
     )
     
     torch.save(algo.actor.state_dict(), "mappo_actor.pth")
