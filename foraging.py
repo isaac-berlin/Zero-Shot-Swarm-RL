@@ -19,7 +19,7 @@ class Foraging(ParallelEnv):
     """
 
     metadata = {
-        "render_modes": ["human"],
+        "render_modes": ["human", "rgb_array"],
         "name": "Foraging-v0",
     }
 
@@ -323,9 +323,12 @@ class Foraging(ParallelEnv):
     # ============================================================
     # Rendering
     # ============================================================
-    def render(self):
-        if self.render_mode != "human":
-            return
+    def render(self, mode=None):
+        if mode is None:
+            mode = self.render_mode
+
+        if mode not in ["human", "rgb_array"]:
+            raise ValueError(f"Unsupported render mode: {mode}")
 
         self._init_pygame()
 
@@ -333,8 +336,9 @@ class Foraging(ParallelEnv):
             if event.type == pygame.QUIT:
                 pygame.quit()
                 self._pygame_initialized = False
-                return
+                return None
 
+        # Draw everything
         self._screen.fill((30, 30, 30))
 
         # grid
@@ -371,11 +375,26 @@ class Foraging(ParallelEnv):
                 pygame.Rect(sx + 8, sy + 8, self._cell_size - 16, self._cell_size - 16),
             )
 
+        # timestep label
         text = self._font.render(f"t={self.timestep}", True, (255, 255, 255))
         self._screen.blit(text, (10, 10))
 
-        pygame.display.flip()
-        self._clock.tick(10)
+        if mode == "human":
+            pygame.display.flip()
+            self._clock.tick(10)
+            return None
+
+        elif mode == "rgb_array":
+            pygame.display.flip()
+            frame = self._get_frame()
+            return frame
+
+        
+    def _get_frame(self):
+        """Return current pygame screen as an RGB numpy array."""
+        data = pygame.surfarray.array3d(self._screen)
+        # pygame gives (width, height, channels) — transpose to (height, width, channels)
+        return np.transpose(data, (1, 0, 2))
 
     def _init_pygame(self):
         if self._pygame_initialized:

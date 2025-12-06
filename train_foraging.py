@@ -3,6 +3,8 @@ import math
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+from itertools import combinations
+import csv
 
 import tqdm
 import numpy as np
@@ -28,7 +30,6 @@ def set_seed(seed=0):
 def stack_global_state(env) -> np.ndarray:
     """
     Global CTDE state: concat all agent and item coordinates.
-    Matches logic from all 3 original scripts.
     """
     state = []
     for agent in env.possible_agents:
@@ -39,11 +40,11 @@ def stack_global_state(env) -> np.ndarray:
 
 
 # ============================================================
-# Networks: Unified Actor for 3 Observation Types
+# Actor / Critic Networks
 # ============================================================
 
 class ActorMLP(nn.Module):
-    """Used for obs_mode = vector or obs_mode = knn."""
+    """Used for obs_mode = vector or knn."""
     def __init__(self, obs_dim, n_actions, hidden=128):
         super().__init__()
         self.net = nn.Sequential(
@@ -52,7 +53,7 @@ class ActorMLP(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
-            nn.Linear(hidden, n_actions)
+            nn.Linear(hidden, n_actions),
         )
 
     def forward(self, obs):
@@ -63,13 +64,15 @@ class ActorCNN(nn.Module):
     """Used for obs_mode = window (CNN)."""
     def __init__(self, obs_shape, n_actions, hidden=128):
         super().__init__()
-
         H, W, C = obs_shape
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(C, 32, 3, padding=1), nn.ReLU(),
-            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(C, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU(),
         )
 
         # compute conv output dimension
@@ -83,7 +86,7 @@ class ActorCNN(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
-            nn.Linear(hidden, n_actions)
+            nn.Linear(hidden, n_actions),
         )
 
     def forward(self, obs):
@@ -95,7 +98,7 @@ class ActorCNN(nn.Module):
 
 
 class CentralCritic(nn.Module):
-    """Shared critic across modes."""
+    """Central critic shared across all agents."""
     def __init__(self, state_dim, hidden=256):
         super().__init__()
         self.net = nn.Sequential(
@@ -104,7 +107,7 @@ class CentralCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
-            nn.Linear(hidden, 1)
+            nn.Linear(hidden, 1),
         )
 
     def forward(self, state):
@@ -148,7 +151,7 @@ class RolloutBuffer:
             adv = np.zeros(T, np.float32)
             ret = np.zeros(T, np.float32)
 
-            next_adv = 0
+            next_adv = 0.0
             next_value = last_values[a]
 
             for t in reversed(range(T)):
@@ -160,7 +163,6 @@ class RolloutBuffer:
                 next_value = traj[t].value
 
             ret = adv + np.array([tr.value for tr in traj], np.float32)
-
             self.advantages[a] = adv
             self.returns[a] = ret
 
@@ -190,18 +192,15 @@ class RolloutBuffer:
 
 
 # ============================================================
-# Unified MAPPO
+# MAPPO Algorithm
 # ============================================================
 
 class MAPPO:
     def __init__(self, obs_spec, n_actions, state_dim, num_agents, obs_mode, device="cpu"):
-        """
-        obs_spec: obs_shape (H,W,C) or obs_dim for vector/knn
-        """
         self.device = device
-        self.num_agents = num_agents
         self.state_dim = state_dim
         self.n_actions = n_actions
+        self.num_agents = num_agents
         self.mode = obs_mode
 
         # --- Build Actor depending on mode ---
@@ -252,12 +251,17 @@ class MAPPO:
         N = obs_t.shape[0]
         idxs = np.arange(N)
 
+        mean_policy_loss = 0.0
+        mean_value_loss = 0.0
+        mean_entropy = 0.0
+        mean_kl = 0.0
+        count = 0
+
         for _ in range(epochs):
             np.random.shuffle(idxs)
             for start in range(0, N, minibatch):
                 mb = idxs[start:start + minibatch]
 
-                # mini-batch slice
                 mb_obs = obs_t[mb]
                 mb_state = state_t[mb]
                 mb_acts = acts_t[mb]
@@ -270,6 +274,9 @@ class MAPPO:
                 dist = Categorical(logits=logits)
                 new_logps = dist.log_prob(mb_acts)
                 entropy = dist.entropy().mean()
+                
+                kl = (mb_old_logps - new_logps).mean()
+                mean_kl += kl.item()
 
                 ratio = torch.exp(new_logps - mb_old_logps)
                 unclipped = ratio * mb_advs
@@ -293,11 +300,25 @@ class MAPPO:
                 nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                 self.opt_critic.step()
 
-                # Logging
+                # accumulate metrics for CSV
+                mean_policy_loss += policy_loss.item()
+                mean_value_loss += vf_loss.item()
+                mean_entropy += entropy.item()
+                count += 1
+
+                # Logging to TensorBoard
                 if writer:
                     writer.add_scalar("loss/policy", policy_loss.item(), global_step)
                     writer.add_scalar("loss/value", vf_loss.item(), global_step)
                     writer.add_scalar("loss/entropy", entropy.item(), global_step)
+
+        # return averaged stats for CSV logging
+        return (
+            mean_policy_loss / count,
+            mean_value_loss / count,
+            mean_entropy / count,
+            mean_kl / count,
+        )
 
 
 # ============================================================
@@ -313,20 +334,18 @@ def train_mappo(
     gamma=0.99,
     lam=0.95,
     device="cpu",
-    render_every=0,
 ):
 
     agent_order = env.possible_agents[:]
     num_agents = len(agent_order)
 
-    # infer observation structure
     dummy_obs, _ = env.reset()
     sample_obs = dummy_obs[agent_order[0]]
 
     if env.obs_mode == "window":
-        obs_spec = sample_obs.shape     # (H, W, C)
+        obs_spec = sample_obs.shape
     else:
-        obs_spec = sample_obs.shape[0]  # dim
+        obs_spec = sample_obs.shape[0]
 
     state_dim = stack_global_state(env).shape[0]
     n_actions = env.action_space(agent_order[0]).n
@@ -347,11 +366,58 @@ def train_mappo(
 
     ep_return, ep_len, step_count, episode = 0, 0, 0, 0
 
+    # ============================================================
+    # Episode CSV
+    # ============================================================
+    ep_csv_name = f"foraging_{env.obs_mode}_episode_metrics.csv"
+    ep_csv = open(ep_csv_name, "w", newline="")
+    ep_writer = csv.writer(ep_csv)
+
+    # dynamic agent columns
+    agent_item_cols = [f"agent{i}_items" for i in range(num_agents)]
+    agent_dist_cols = [f"agent{i}_dist" for i in range(num_agents)]
+
+    ep_writer.writerow([
+        "episode", "episode_return", "episode_length", "env_steps",
+        "items_collected_total", "fraction_items_collected",
+        "unique_cells_visited", "coverage_fraction",
+        "mean_pairwise_dist", "success",
+        *agent_item_cols, *agent_dist_cols,
+        "freq_up", "freq_down", "freq_left", "freq_right",
+        "freq_stay",
+    ])
+
+    # ============================================================
+    # Update CSV
+    # ============================================================
+    upd_csv_name = f"foraging_{env.obs_mode}_update_metrics.csv"
+    upd_csv = open(upd_csv_name, "w", newline="")
+    upd_writer = csv.writer(upd_csv)
+    upd_writer.writerow([
+        "update", "explained_variance", "approx_kl",
+        "policy_loss", "value_loss", "entropy",
+        "adv_mean", "adv_std", "value_mean", "value_std",
+    ])
+
+    # ============================================================
+    # Per-episode metric tracking
+    # ============================================================
+    visited = set()
+
+    agent_prev_pos = {a: env.agent_location[a] for a in agent_order}
+    agent_dist = {a: 0.0 for a in agent_order}
+    agent_items = {a: 0 for a in agent_order}  # you can increment this via env logic if desired
+
+    action_freq = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+
     pbar = tqdm.tqdm(total=total_episodes)
+
     while episode < total_episodes:
         buffer.clear()
 
+        # ------------------------------------------------------------
         # rollout
+        # ------------------------------------------------------------
         for _ in range(rollout_len):
             state = stack_global_state(env)
 
@@ -362,9 +428,28 @@ def train_mappo(
                 actions[a] = act
                 logps[a] = logp
                 values[a] = val
+                action_freq[act] += 1
 
             next_obs, rewards, dones, truncs, infos = env.step(actions)
 
+            # track behavior & task metrics
+            # distance travelled
+            for a in agent_order:
+                old = agent_prev_pos[a]
+                new = env.agent_location[a]
+                agent_dist[a] += abs(new[0] - old[0]) + abs(new[1] - old[1])
+                agent_prev_pos[a] = new
+
+            # coverage
+            for a in agent_order:
+                visited.add(env.agent_location[a])
+
+            # update counts
+            ep_return += sum(rewards.values())
+            ep_len += 1
+            step_count += num_agents
+
+            # store transitions
             for a in agent_order:
                 buffer.add(
                     a,
@@ -378,44 +463,104 @@ def train_mappo(
                         done=dones[a] or truncs[a],
                     ),
                 )
-                ep_return += rewards[a]
-                ep_len += 1
 
             obs = next_obs
-            step_count += num_agents
 
-            if render_every > 0 and episode % render_every == 0:
-                env.render()
-
+            # episode end
             if all(dones.values()) or all(truncs.values()):
-                writer.add_scalar("episode/return", ep_return, episode)
-                writer.add_scalar("episode/length", ep_len, episode)
+                # =====================================================
+                # Compute Episode Metrics
+                # =====================================================
+                items_collected_total = sum(env.collected[item] for item in env.items)
+                fraction_items_collected = items_collected_total / env.n_items
+                success = 1 if items_collected_total == env.n_items else 0
+
+                unique_cells_visited = len(visited)
+                coverage_fraction = unique_cells_visited / (env.grid_size * env.grid_size)
+
+                # mean pairwise distance
+                pair_dists = []
+                locs = [env.agent_location[a] for a in agent_order]
+                for (x1, y1), (x2, y2) in combinations(locs, 2):
+                    pair_dists.append(abs(x1 - x2) + abs(y1 - y2))
+                mean_pairwise = np.mean(pair_dists) if pair_dists else 0
+
+                # action distribution
+                freq_up = action_freq.get(0, 0)
+                freq_down = action_freq.get(1, 0)
+                freq_left = action_freq.get(2, 0)
+                freq_right = action_freq.get(3, 0)
+                freq_stay = action_freq.get(4, 0)
+
+                ep_writer.writerow([
+                    episode, ep_return, ep_len, step_count,
+                    items_collected_total, fraction_items_collected,
+                    unique_cells_visited, coverage_fraction,
+                    mean_pairwise, success,
+                    *(agent_items[a] for a in agent_order),
+                    *(agent_dist[a] for a in agent_order),
+                    freq_up, freq_down, freq_left, freq_right, freq_stay,
+                ])
+                ep_csv.flush()
+
+                # reset episode metrics
                 obs, _ = env.reset()
                 ep_return, ep_len = 0, 0
-                episode += 1
+                visited.clear()
+                agent_dist = {a: 0.0 for a in agent_order}
+                action_freq = {k: 0 for k in action_freq}
                 pbar.update(1)
+                episode += 1
 
-        # bootstrap value
+                if episode >= total_episodes:
+                    break
+
+        # ============================================================
+        # PPO Update — Compute Update Metrics for CSV
+        # ============================================================
+        # bootstrap
         final_state = stack_global_state(env)
         with torch.no_grad():
             v_last = algo.critic(
                 torch.tensor(final_state, dtype=torch.float32, device=device).unsqueeze(0)
             ).item()
-
         last_vals = {a: v_last for a in agent_order}
-        buffer.compute_gae(gamma, lam, last_vals)
 
-        algo.update(
-            buffer=buffer,
-            epochs=update_epochs,
-            minibatch=minibatch_size,
-            gamma=gamma,
-            lam=lam,
-            writer=writer,
-            global_step=step_count,
+        buffer.compute_gae(gamma, lam, last_vals)
+        obs_batch, _, _, old_logps, vals, advs, rets = buffer.get_flat_batches()
+
+        # explained variance
+        var_y = np.var(rets)
+        var_diff = np.var(rets - vals)
+        explained_var = 1 - var_diff / var_y if var_y > 1e-8 else 0
+
+        # value + advantage stats
+        adv_mean, adv_std = np.mean(advs), np.std(advs)
+        val_mean, val_std = np.mean(vals), np.std(vals)
+
+        # train and get loss metrics
+        policy_loss_avg, value_loss_avg, entropy_avg, approx_kl = algo.update(
+            buffer, update_epochs, minibatch_size, gamma, lam, writer, step_count
         )
 
+        # ============================================================
+        # Write UPDATE metrics to CSV
+        # ============================================================
+        upd_writer.writerow([
+            step_count,
+            explained_var,
+            approx_kl,
+            policy_loss_avg,
+            value_loss_avg,
+            entropy_avg,
+            adv_mean, adv_std,
+            val_mean, val_std,
+        ])
+        upd_csv.flush()
+
     env.close()
+    ep_csv.close()
+    upd_csv.close()
     writer.close()
     return algo
 
@@ -432,9 +577,9 @@ if __name__ == "__main__":
         grid_size=10,
         num_agents=4,
         num_items=4,
-        obs_mode="knn",  # "vector", "window", "knn"
+        obs_mode="window",  # "vector", "window", "knn"
     )
 
-    algo = train_mappo(env, total_episodes=2000, device=device)
+    algo = train_mappo(env, total_episodes=2500, device=device)
 
     torch.save(algo.actor.state_dict(), f"mappo_{env.obs_mode}_actor.pth")
