@@ -6,12 +6,18 @@ import os
 # ============================================================
 # Setup
 # ============================================================
+MAX_STEPS = 200  # must match evaluation script
 
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
 ensure_dir("plots")
+
+def make_subplot_grid(n):
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    return rows, cols
 
 
 # ============================================================
@@ -189,62 +195,73 @@ W_mpd = win_res["mpd_mean"].tolist()
 
 
 # ============================================================
-# FIGURE 1 — COMPLETION RATE (3x2 subplots)
+# FIGURE 1 — COMPLETION RATE
 # ============================================================
 
-fig, axes = plt.subplots(3, 2, figsize=(15, 15))
-axes = axes.flatten()
+rows, cols = make_subplot_grid(len(envs))
+fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 5 * rows))
+axes = np.array(axes).reshape(-1)
 
-for i, ax in enumerate(axes):
-    env = envs[i]
-    ax.bar(["KNN", "Window"], [K_comp[i], W_comp[i]], color=["#4c72b0", "#dd8452"])
-    ax.set_ylim(0, 1)
-    ax.set_title(f"Completion — {clean_env_label(env)}", fontsize=13)
+for i, ax in enumerate(axes[:len(envs)]):
+    ax.bar(["KNN", "Window"], [K_comp[i], W_comp[i]])
+    ax.set_ylim(0.0, 1.0)   # <-- FIXED
+    ax.set_title(f"Completion\n{clean_env_label(envs[i])}", fontsize=12)
     ax.set_ylabel("Completion Rate")
     ax.grid(axis="y", alpha=0.3)
 
-plt.suptitle("Completion Rate Across All Scenarios", fontsize=20)
-plt.tight_layout(rect=[0, 0, 1, 0.97])
+# Disable unused subplots
+for ax in axes[len(envs):]:
+    ax.axis("off")
+
+plt.suptitle("Completion Rate Across All Scenarios", fontsize=18)
+plt.tight_layout(rect=[0, 0, 1, 0.96])
 plt.savefig("plots/summary_completion.png")
 plt.close()
 
-
 # ============================================================
-# FIGURE 2 — TIMESTEPS (3x2 subplots)
+# FIGURE 2 — MEAN TIMESTEPS
 # ============================================================
 
-fig, axes = plt.subplots(3, 2, figsize=(15, 15))
-axes = axes.flatten()
+rows, cols = make_subplot_grid(len(envs))
+fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 5 * rows))
+axes = np.array(axes).reshape(-1)
 
-for i, ax in enumerate(axes):
-    env = envs[i]
-    ax.bar(["KNN", "Window"], [K_time[i], W_time[i]], color=["#4c72b0", "#dd8452"])
-    ax.set_title(f"Timesteps — {clean_env_label(env)}", fontsize=13)
-    ax.set_ylabel("Timesteps")
+for i, ax in enumerate(axes[:len(envs)]):
+    ax.bar(["KNN", "Window"], [K_time[i], W_time[i]])
+    ax.set_ylim(0, MAX_STEPS)   # <-- FIXED
+    ax.set_title(f"Timesteps\n{clean_env_label(envs[i])}", fontsize=12)
+    ax.set_ylabel("Mean Timesteps")
     ax.grid(axis="y", alpha=0.3)
 
-plt.suptitle("Timesteps Across All Scenarios", fontsize=20)
-plt.tight_layout(rect=[0, 0, 1, 0.97])
+for ax in axes[len(envs):]:
+    ax.axis("off")
+
+plt.suptitle("Timesteps Across All Scenarios", fontsize=18)
+plt.tight_layout(rect=[0, 0, 1, 0.96])
 plt.savefig("plots/summary_timesteps.png")
 plt.close()
 
 
 # ============================================================
-# FIGURE 3 — MEAN PAIRWISE DISTANCE (3x2 subplots)
+# FIGURE 3 — MEAN PAIRWISE DISTANCE
 # ============================================================
 
-fig, axes = plt.subplots(3, 2, figsize=(15, 15))
-axes = axes.flatten()
+rows, cols = make_subplot_grid(len(envs))
+fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 5 * rows))
+axes = np.array(axes).reshape(-1)
 
-for i, ax in enumerate(axes):
-    env = envs[i]
-    ax.bar(["KNN", "Window"], [K_mpd[i], W_mpd[i]], color=["#4c72b0", "#dd8452"])
-    ax.set_title(f"MPD — {clean_env_label(env)}", fontsize=13)
+for i, ax in enumerate(axes[:len(envs)]):
+    ax.bar(["KNN", "Window"], [K_mpd[i], W_mpd[i]])
+    ax.set_ylim(0, 15)   # <-- FIXED
+    ax.set_title(f"Mean Pairwise Distance\n{clean_env_label(envs[i])}", fontsize=12)
     ax.set_ylabel("Mean Pairwise Distance")
     ax.grid(axis="y", alpha=0.3)
-
-plt.suptitle("Mean Pairwise Distance Across All Scenarios", fontsize=20)
-plt.tight_layout(rect=[0, 0, 1, 0.97])
+    
+for ax in axes[len(envs):]:
+    ax.axis("off")
+    
+plt.suptitle("Mean Pairwise Distance Across All Scenarios", fontsize=18)
+plt.tight_layout(rect=[0, 0, 1, 0.96])
 plt.savefig("plots/summary_mpd.png")
 plt.close()
 
