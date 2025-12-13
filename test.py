@@ -16,9 +16,9 @@ DPI = 300
 ENV_SIZES = [5, 10, 20]
 
 REGIMES = {
-    "Scarcity\n":  (8, 4),
-    "Abundance\n": (4, 8),
-    "Equivalent\n":   (8, 8),
+    "Scarcity \n(8 agents 4 Objects)\n":  (8, 4),
+    "Abundance \n(4 agents 8 Objects)\n": (4, 8),
+    "Equivalent \n(8 agents 8 Objects)\n":   (8, 8),
 }
 
 # ============================================================
@@ -122,14 +122,14 @@ def plot_factor_grid(
 
     def annotate_bar(ax, xpos, val, err):
         pad = 0.02 * (ylim[1] - ylim[0])
-        label = f"{val:.2f}" if ylim[1] <= 1.1 else f"{val:.1f}"
-        ax.text(
-            xpos, val + err + pad,
-            label,
-            ha="center",
-            va="bottom",
-            fontsize=10
-        )
+        #label = f"{val:.2f}" if ylim[1] <= 1.1 else f"{val:.1f}"
+        #ax.text(
+        #    xpos, val + err + pad,
+        #    label,
+        #    ha="center",
+        #    va="bottom",
+        #    fontsize=10
+        #)
 
     for i in range(rows):
         for j in range(cols):
