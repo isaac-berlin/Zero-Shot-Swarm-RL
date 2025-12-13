@@ -177,15 +177,16 @@ def plot_factor_grid(
             ax.set_ylim(*ylim)
             ax.grid(axis="y", alpha=0.3)
 
-    fig.suptitle(title, fontsize=18, y=0.98)
+    #fig.suptitle(title, fontsize=18, y=0.98)
 
     fig.legend(
-        loc="upper right",
+        loc="lower right",
+        bbox_to_anchor=(0.99, 0.01),
         frameon=False,
         fontsize=12
     )
 
-    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    plt.tight_layout(rect=[0, 0.06, 1, 1])
     plt.savefig(f"plots/{filename}.png", dpi=DPI)
     plt.close()
 
@@ -247,110 +248,3 @@ plot_factor_grid(
 )
 
 print("\n✔ All paper-quality plots with 95% CI saved to ./plots/\n")
-
-def plot_per_grid_summary(
-    grid_size,
-    knn_df,
-    win_df
-):
-    regimes = list(REGIMES.keys())
-    cols = len(regimes)
-
-    def extract(metric_mean, metric_std):
-        K_mean, K_ci, W_mean, W_ci = [], [], [], []
-
-        for regime_name, (a, it) in REGIMES.items():
-            k_rows = knn_df[
-                (knn_df.grid == grid_size) &
-                (knn_df.agents == a) &
-                (knn_df.items == it)
-            ]
-
-            w_rows = win_df[
-                (win_df.grid == grid_size) &
-                (win_df.agents == a) &
-                (win_df.items == it)
-            ]
-
-            if len(k_rows) == 0:
-                raise ValueError(
-                    f"[KNN missing] grid={grid_size}, agents={a}, items={it}"
-                )
-            if len(w_rows) == 0:
-                raise ValueError(
-                    f"[WINDOW missing] grid={grid_size}, agents={a}, items={it}"
-                )
-
-            k = k_rows.iloc[0]
-            w = w_rows.iloc[0]
-
-            K_mean.append(k[metric_mean])
-            W_mean.append(w[metric_mean])
-
-            K_ci.append(ci_from_std(k[metric_std]))
-            W_ci.append(ci_from_std(w[metric_std]))
-
-        return np.array(K_mean), np.array(K_ci), np.array(W_mean), np.array(W_ci)
-
-    # ---- Extract metrics ----
-    Kc, Kc_ci, Wc, Wc_ci = extract("completion_mean", "completion_std")
-    Kt, Kt_ci, Wt, Wt_ci = extract("timesteps_mean", "timesteps_std")
-    Km, Km_ci, Wm, Wm_ci = extract("mpd_mean", "mpd_std")
-
-    # ---- Plot ----
-    fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
-
-    bar_w = 0.30
-    x = np.arange(cols)
-    offset = bar_w / 2
-
-    def annotate(ax, xpos, val, err, ylim):
-        pad = 0.02 * (ylim[1] - ylim[0])
-        label = f"{val:.2f}" if ylim[1] <= 1.1 else f"{val:.1f}"
-        ax.text(xpos, val + err + pad, label, ha="center", fontsize=10)
-
-    plots = [
-        (axes[0], Kc, Kc_ci, Wc, Wc_ci, "Completion Rate", (0, 1.05)),
-        (axes[1], Kt, Kt_ci, Wt, Wt_ci, "Mean Timesteps", (0, MAX_STEPS)),
-        (axes[2], Km, Km_ci, Wm, Wm_ci, "Mean Pairwise Distance", (0, 15)),
-    ]
-
-    for ax, K_m, K_ci_m, W_m, W_ci_m, ylabel, ylim in plots:
-        ax.bar(x - offset, K_m, bar_w, yerr=K_ci_m, capsize=5, label="KNN")
-        ax.bar(x + offset, W_m, bar_w, yerr=W_ci_m, capsize=5, label="Window")
-
-        for i in range(cols):
-            annotate(ax, x[i] - offset, K_m[i], K_ci_m[i], ylim)
-            annotate(ax, x[i] + offset, W_m[i], W_ci_m[i], ylim)
-
-        ax.set_ylabel(ylabel)
-        ax.set_ylim(*ylim)
-        ax.grid(axis="y", alpha=0.3)
-
-    axes[-1].set_xticks(x)
-    axes[-1].set_xticklabels(regimes, fontsize=11)
-
-    fig.suptitle(
-        f"Performance by Resource Regime ({grid_size}×{grid_size})",
-        fontsize=18,
-        y=0.98
-    )
-
-    fig.legend(
-        loc="upper right",
-        frameon=False,
-        fontsize=12
-    )
-
-    plt.tight_layout(rect=[0, 0, 1, 0.94])
-    plt.savefig(f"plots/paper_grid_{grid_size}_summary.png", dpi=DPI)
-    plt.close()
-
-
-for g in ENV_SIZES:
-    plot_per_grid_summary(
-        grid_size=g,
-        knn_df=knn_res,
-        win_df=win_res
-    )
-    print(f"✔ Summary plot for {g}×{g} saved to ./plots/")
